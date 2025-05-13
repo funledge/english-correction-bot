@@ -3,7 +3,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
-import openai
+from openai import OpenAI  # 新しいOpenAIクライアント
 
 app = Flask(__name__)
 
@@ -15,7 +15,8 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-openai.api_key = OPENAI_API_KEY
+# OpenAIクライアント初期化
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -31,21 +32,19 @@ def callback():
 def handle_message(event):
     user_input = event.message.text
 
-    # OpenAIに英文添削を依頼
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # gpt-4使いたければここを変更
+        # ChatGPTに英文添削を依頼
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "あなたは英語教師です。以下の英文の間違いを添削し、改善案と簡単なアドバイスを返してください。"},
                 {"role": "user", "content": user_input}
             ]
         )
-        reply_text = response.choices[0].message["content"].strip()
-
+        reply_text = response.choices[0].message.content.strip()
     except Exception as e:
         reply_text = f"エラーが発生しました：{str(e)}"
 
-    # LINEに返信
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=reply_text)
