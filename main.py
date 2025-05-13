@@ -10,6 +10,8 @@ from google.oauth2.service_account import Credentials
 import json
 import random
 
+app = Flask(__name__)
+
 def get_users_and_topic():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     
@@ -58,7 +60,7 @@ def send_topic():
     return 'OK'
 
 
-app = Flask(__name__)
+
 
 # 環境変数読み込み
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
