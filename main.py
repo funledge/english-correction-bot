@@ -5,6 +5,40 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
 import openai
 
+import gspread
+from google.oauth2.service_account import Credentials
+import random
+
+def get_users_and_topic():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
+    client = gspread.authorize(creds)
+
+    sheet = client.open("添削Botユーザー")  # ← あなたのスプレッドシート名に合わせて！
+    
+    # ユーザーID取得
+    user_sheet = sheet.worksheet("users")
+    user_ids = user_sheet.col_values(1)[1:]  # A列（ヘッダー除く）
+
+    # お題リスト取得
+    topic_sheet = sheet.worksheet("topics")
+    topics = topic_sheet.col_values(1)[1:]  # A列（ヘッダー除く）
+    selected_topic = random.choice(topics)
+
+    return user_ids, selected_topic
+
+@app.route("/send-topic", methods=['POST'])
+def send_topic():
+    user_ids, selected_topic = get_users_and_topic()
+
+    for user_id in user_ids:
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=f"📘 今日のお題\n{selected_topic}")
+        )
+    return 'OK'
+
+
 app = Flask(__name__)
 
 # 環境変数読み込み
@@ -37,7 +71,7 @@ def handle_message(event):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "あなたはフレンドリーで丁寧な英語の先生です。以下の英文を3つのパートに分けて添削してください。\n\n1. 「✏️原文」というラベルを見出しにして、1行下にその英文を記載してください\n2. 「✅添削後の英文」というラベルを見出しにして、1行下に正しい文を記載してください\n3. 「💡間違いの理由やアドバイス」というラベルを見出しにして、1行下にやさしいアドバイスを書いてください（敬語で、フレンドリーで、中学生にもわかるように。絵文字は1〜2個だけ使ってください）\n\n各ラベルは**必ず**表示し、省略しないでください。"},
+                {"role": "system", "content": "あなたは親切な英語教師です。以下の英文を3つのポイントに分けて添削してください。\n1. 原文\n2. 添削後の正しい文\n3. 間違いの理由やアドバイス（優しく！）\nフォーマットを守って、初心者にもわかりやすく伝えてください。"},
                 {"role": "user", "content": user_input}
             ]
         )
