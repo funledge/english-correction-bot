@@ -37,7 +37,7 @@ def handle_message(event):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "あなたは英語教師です。以下の英文の間違いを添削し、改善案と簡単なアドバイスを返してください。"},
+                {"role": "system", "content": "あなたは親切な英語教師です。以下の英文を3つのポイントに分けて添削してください。\n1. 原文\n2. 添削後の正しい文\n3. 間違いの理由やアドバイス（優しく！）\nフォーマットを守って、初心者にもわかりやすく伝えてください。"},
                 {"role": "user", "content": user_input}
             ]
         )
