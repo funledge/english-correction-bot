@@ -7,12 +7,31 @@ import openai
 
 import gspread
 from google.oauth2.service_account import Credentials
+import json
 import random
 
 def get_users_and_topic():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
+    
+    # Renderの環境変数から認証情報を取得
+    credentials_info = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
+    creds = Credentials.from_service_account_info(credentials_info, scopes=scope)
     client = gspread.authorize(creds)
+
+    # スプレッドシートを開く（名前をあなたのシート名に合わせて！）
+    sheet = client.open("添削Botユーザー")
+
+    # ユーザーID取得（A列）
+    user_sheet = sheet.worksheet("users")
+    user_ids = user_sheet.col_values(1)[1:]  # ヘッダー除く
+
+    # お題リスト取得（A列）
+    topic_sheet = sheet.worksheet("topics")
+    topics = topic_sheet.col_values(1)[1:]
+    selected_topic = random.choice(topics)
+
+    return user_ids, selected_topic
+
 
     sheet = client.open("添削Botユーザー")  # ← あなたのスプレッドシート名に合わせて！
     
