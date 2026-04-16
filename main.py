@@ -96,15 +96,22 @@ def handle_message(event):
     user_input = event.message.text
 
     try:
-        # ChatGPTに添削リクエスト
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "あなたは親切な英語教師です。以下の英文を3つのポイントに分けて添削してください。\n1. 原文\n2. 添削後の正しい文\n3. 間違いの理由やアドバイス（優しく！）\nフォーマットを守って、初心者にもわかりやすく伝えてください。"},
-                {"role": "user", "content": user_input}
+                {
+                    "role": "system",
+                    "content": "あなたはフレンドリーで丁寧な英語の先生です。以下の英文を3つのパートに分けて添削してください。\n\n1. 「✏️原文」というラベルを見出しにして、1行下にその英文を記載してください\n2. 「✅添削後の英文」というラベルを見出しにして、1行下に正しい文を記載してください\n3. 「💡間違いの理由やアドバイス」というラベルを見出しにして、1行下にやさしいアドバイスを書いてください\n\n各ラベルは必ず表示し、省略しないでください。"
+                },
+                {
+                    "role": "user",
+                    "content": user_input
+                }
             ]
         )
+
         reply_text = response.choices[0].message.content.strip()
+
     except Exception as e:
         reply_text = f"エラーが発生しました：{str(e)}"
 
