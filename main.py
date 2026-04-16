@@ -85,18 +85,16 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    print("handle_message triggered")
+    print("handle_message triggered", flush=True)
 
     try:
         user_id = event.source.user_id
         print(f"user_id: {user_id}", flush=True)
         save_user_id(user_id)
-except Exception as e:
+    except Exception as e:
         print(f"user_id error: {e}", flush=True)
-        
-user_id = event.source.user_id
-save_user_id(user_id)
-user_input = event.message.text
+
+    user_input = event.message.text
 
     try:
         response = client.chat.completions.create(
