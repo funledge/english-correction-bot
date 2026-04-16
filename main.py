@@ -91,9 +91,11 @@ def handle_message(event):
         user_id = event.source.user_id
         print(f"user_id: {user_id}")
     except Exception as e:
-        print(f"user_id error: {e}")
-
-    user_input = event.message.text
+        print(f"user_id error: {e}")　　
+        
+user_id = event.source.user_id
+save_user_id(user_id)
+user_input = event.message.text
 
     try:
         response = client.chat.completions.create(
