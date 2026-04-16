@@ -85,8 +85,13 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_id = event.source.user_id
-    print(user_id)
+    print("handle_message triggered")
+
+    try:
+        user_id = event.source.user_id
+        print(f"user_id: {user_id}")
+    except Exception as e:
+        print(f"user_id error: {e}")
 
     user_input = event.message.text
 
