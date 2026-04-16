@@ -85,6 +85,9 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    user_id = event.source.user_id
+    print(user_id)
+
     user_input = event.message.text
 
     try:
