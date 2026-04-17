@@ -28,6 +28,17 @@ DEFAULT_MODE = "correction"
 DICTIONARY_MODE = "dictionary"
 DICTIONARY_TRIGGER = "辞書"
 BUSY_MESSAGE = "少し混み合っているみたい。\n少し時間をあけて、もう一度送ってみてね！"
+DICTIONARY_FREE_LIMIT = 5
+DICTIONARY_LIMIT_MESSAGE = "無料で使えるのは5回までです😊\nProプランにすると無制限に使えるよ！\nURL"
+DICTIONARY_GUIDE_MESSAGE = (
+    "📘 辞書機能です！\n"
+    "調べたい単語や熟語を送ってください😊\n"
+    "英語でも日本語でもOKです！\n"
+    "例：\n"
+    "・take off\n"
+    "・やり直す\n"
+    "・actually"
+)
 
 
 def get_gspread_client():
@@ -142,6 +153,36 @@ def check_and_update_usage(user_id):
             return True
 
     # 今日初めて使う場合
+    usage_sheet.append_row([user_id, today, 1])
+    return True
+
+
+def check_and_update_dictionary_usage(user_id):
+    sheet = get_spreadsheet()
+    usage_sheet = ensure_worksheet(sheet, "dictionary_usage", ["user_id", "date", "count"])
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    records = usage_sheet.get_all_values()
+
+    for i, row in enumerate(records[1:], start=2):
+        if len(row) < 3:
+            continue
+
+        row_user_id = row[0]
+        row_date = row[1]
+
+        try:
+            row_count = int(row[2])
+        except ValueError:
+            row_count = 0
+
+        if row_user_id == user_id and row_date == today:
+            if row_count >= DICTIONARY_FREE_LIMIT:
+                return False
+
+            usage_sheet.update_cell(i, 3, row_count + 1)
+            return True
+
     usage_sheet.append_row([user_id, today, 1])
     return True
 
@@ -342,29 +383,23 @@ def handle_message(event):
         current_mode = get_user_mode(user_id)
 
         if user_input == DICTIONARY_TRIGGER:
-            if not can_use_dictionary(user_id):
-                safe_reply(
-                    event.reply_token,
-                    "辞書機能は有料プラン限定です😊\npaid_plan が dictionary のユーザーのみ利用できます。"
-                )
-                return
+            is_dictionary_paid_user = can_use_dictionary(user_id)
+
+            if not is_dictionary_paid_user:
+                can_use_free_dictionary = check_and_update_dictionary_usage(user_id)
+
+                if not can_use_free_dictionary:
+                    safe_reply(
+                        event.reply_token,
+                        DICTIONARY_LIMIT_MESSAGE
+                    )
+                    return
 
             set_user_mode(user_id, DICTIONARY_MODE)
-            safe_reply(
-                event.reply_token,
-                "辞書モードにしました📘\n次のメッセージで、調べたい単語・熟語・文章を送ってね。"
-            )
+            safe_reply(event.reply_token, DICTIONARY_GUIDE_MESSAGE)
             return
 
         if current_mode == DICTIONARY_MODE:
-            if not can_use_dictionary(user_id):
-                set_user_mode(user_id, DEFAULT_MODE)
-                safe_reply(
-                    event.reply_token,
-                    "辞書機能は有料プラン限定です😊\npaid_plan が dictionary のユーザーのみ利用できます。"
-                )
-                return
-
             try:
                 reply_text = build_dictionary_reply(user_input)
             except Exception as e:
