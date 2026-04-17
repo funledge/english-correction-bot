@@ -24,6 +24,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 SPREADSHEET_NAME = "添削Botユーザー"
+OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_MODE = "correction"
 DICTIONARY_MODE = "dictionary"
 DICTIONARY_TRIGGER = "辞書"
@@ -94,13 +95,11 @@ def ensure_worksheet(sheet, worksheet_name, headers, rows=1000, cols=10):
 def get_users_and_topic():
     sheet = get_spreadsheet()
 
-    # usersシートからuserId取得
     user_sheet = ensure_worksheet(sheet, "users", ["user_id", "paid_plan"])
-    user_ids = user_sheet.col_values(1)[1:]  # ヘッダー除く
+    user_ids = user_sheet.col_values(1)[1:]
 
-    # topicsシートからお題取得
     topic_sheet = ensure_worksheet(sheet, "topics", ["topic"])
-    topics = topic_sheet.col_values(1)[1:]  # ヘッダー除く
+    topics = topic_sheet.col_values(1)[1:]
     selected_topic = random.choice(topics) if topics else "今日は英語で1文書いてみよう！"
 
     return user_ids, selected_topic
@@ -132,7 +131,6 @@ def check_and_update_usage(user_id):
     today = datetime.now().strftime("%Y-%m-%d")
     records = usage_sheet.get_all_values()
 
-    # 既存データを探す
     for i, row in enumerate(records[1:], start=2):
         if len(row) < 3:
             continue
@@ -152,7 +150,6 @@ def check_and_update_usage(user_id):
             usage_sheet.update_cell(i, 3, row_count + 1)
             return True
 
-    # 今日初めて使う場合
     usage_sheet.append_row([user_id, today, 1])
     return True
 
@@ -211,7 +208,7 @@ def get_user_paid_plan(user_id):
     return ""
 
 
-def can_use_dictionary(user_id):
+def can_use_dictionary_unlimited(user_id):
     return get_user_paid_plan(user_id) == DICTIONARY_MODE
 
 
@@ -265,9 +262,16 @@ def set_user_mode(user_id, mode):
     mode_sheet.append_row(new_row)
 
 
+def send_text(user_id, text):
+    line_bot_api.push_message(
+        user_id,
+        TextSendMessage(text=text)
+    )
+
+
 def build_correction_reply(user_input):
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=OPENAI_MODEL,
         messages=[
             {
                 "role": "system",
@@ -294,26 +298,28 @@ def build_correction_reply(user_input):
 
 def build_dictionary_reply(user_input):
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=OPENAI_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "あなたは親切な英語・日本語辞書アシスタントです。"
-                    "ユーザー入力が英語なら日本語に、日本語なら英語に翻訳してください。"
-                    "単語、熟語、文章のどれでも対応してください。"
-                    "必ず以下の4項目をこの順番・この見出しで返してください。\n\n"
+                    "あなたは親切な英日・日英辞書アシスタントです。"
+                    "入力が英語なら日本語に、日本語なら英語に翻訳してください。"
+                    "単語、熟語、短文、文章のどれにも対応してください。\n\n"
+                    "特に重要なルール:\n"
+                    "・入力が日本語のときは、「🔤単語」には必ず英語の訳語だけを書く\n"
+                    "・入力が日本語のときは、日本語の言い換えや説明を書かない\n"
+                    "・例えば「健康」なら、「健康的」ではなく英語の見出し語を出す\n"
+                    "・入力が英語のときは、「🔤単語」には英語の元表現を書く\n"
+                    "・品詞は見出し語に合わせて自然なものを書く\n"
+                    "・例文は必ず英語の例文を1つ書き、その次の行に日本語訳を丸かっこ付きで書く\n"
+                    "・単語の意味は、翻訳先の言語でわかりやすく簡潔に書く\n"
+                    "・文章入力なら、「🔤単語」には文章全体の自然な翻訳を書く\n"
+                    "・必ず次の4項目をこの順番、この見出しで返す\n\n"
                     "🔤単語\n"
                     "📝意味\n"
                     "🧩品詞\n"
-                    "💬例文\n\n"
-                    "ルール:\n"
-                    "・自然でわかりやすい訳にする\n"
-                    "・単語や熟語なら、その表現自体を「🔤単語」に書く\n"
-                    "・文章なら、主要な表現または文章全体を「🔤単語」に書く\n"
-                    "・品詞は単語や熟語なら品詞を書く。文章全体なら「文」と書く\n"
-                    "・例文は簡単で自然な1文にし、日本語訳も添える\n"
-                    "・説明はやさしく簡潔にする"
+                    "💬例文"
                 )
             },
             {
@@ -321,20 +327,13 @@ def build_dictionary_reply(user_input):
                 "content": user_input
             }
         ],
-        temperature=0.3
+        temperature=0.2
     )
 
     return response.choices[0].message.content.strip()
 
 
-def safe_reply(reply_token, text):
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text=text)
-    )
-
-
-@app.route("/send-topic", methods=['POST'])
+@app.route("/send-topic", methods=["POST"])
 def send_topic():
     try:
         user_ids, selected_topic = get_users_and_topic()
@@ -343,21 +342,18 @@ def send_topic():
             if not user_id.strip():
                 continue
 
-            line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text=f"📘 今日のお題\n\n{selected_topic}")
-            )
+            send_text(user_id, f"📘 今日のお題\n\n{selected_topic}")
 
-        return 'OK'
+        return "OK"
 
     except Exception as e:
         print(f"send_topic error: {e}", flush=True)
         return f"Error: {str(e)}", 500
 
 
-@app.route("/callback", methods=['POST'])
+@app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers['X-Line-Signature']
+    signature = request.headers["X-Line-Signature"]
     body = request.get_data(as_text=True)
 
     try:
@@ -365,7 +361,7 @@ def callback():
     except InvalidSignatureError:
         abort(400)
 
-    return 'OK'
+    return "OK"
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -383,20 +379,17 @@ def handle_message(event):
         current_mode = get_user_mode(user_id)
 
         if user_input == DICTIONARY_TRIGGER:
-            is_dictionary_paid_user = can_use_dictionary(user_id)
+            is_dictionary_paid_user = can_use_dictionary_unlimited(user_id)
 
             if not is_dictionary_paid_user:
                 can_use_free_dictionary = check_and_update_dictionary_usage(user_id)
 
                 if not can_use_free_dictionary:
-                    safe_reply(
-                        event.reply_token,
-                        DICTIONARY_LIMIT_MESSAGE
-                    )
+                    send_text(user_id, DICTIONARY_LIMIT_MESSAGE)
                     return
 
             set_user_mode(user_id, DICTIONARY_MODE)
-            safe_reply(event.reply_token, DICTIONARY_GUIDE_MESSAGE)
+            send_text(user_id, DICTIONARY_GUIDE_MESSAGE)
             return
 
         if current_mode == DICTIONARY_MODE:
@@ -408,7 +401,7 @@ def handle_message(event):
             finally:
                 set_user_mode(user_id, DEFAULT_MODE)
 
-            safe_reply(event.reply_token, reply_text)
+            send_text(user_id, reply_text)
             return
 
         can_use = check_and_update_usage(user_id)
@@ -418,7 +411,7 @@ def handle_message(event):
                 "本日の無料添削は10回までです😊\n\n"
                 "もっと使いたい方は、有料プランをご利用ください！"
             )
-            safe_reply(event.reply_token, reply_text)
+            send_text(user_id, reply_text)
             return
 
         try:
@@ -427,7 +420,7 @@ def handle_message(event):
             print(f"correction error: {e}", flush=True)
             reply_text = BUSY_MESSAGE
 
-        safe_reply(event.reply_token, reply_text)
+        send_text(user_id, reply_text)
 
     except Exception as e:
         print(f"handle_message error: {e}", flush=True)
@@ -439,10 +432,10 @@ def handle_message(event):
             except Exception as mode_error:
                 print(f"mode reset error: {mode_error}", flush=True)
 
-        try:
-            safe_reply(event.reply_token, BUSY_MESSAGE)
-        except Exception as reply_error:
-            print(f"reply error: {reply_error}", flush=True)
+            try:
+                send_text(user_id, BUSY_MESSAGE)
+            except Exception as push_error:
+                print(f"push error: {push_error}", flush=True)
 
 
 if __name__ == "__main__":
