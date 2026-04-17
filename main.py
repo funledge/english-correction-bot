@@ -23,6 +23,12 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # OpenAIクライアント初期化
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
+SPREADSHEET_NAME = "添削Botユーザー"
+DEFAULT_MODE = "correction"
+DICTIONARY_MODE = "dictionary"
+DICTIONARY_TRIGGER = "辞書"
+BUSY_MESSAGE = "少し混み合っているみたい。\n少し時間をあけて、もう一度送ってみてね！"
+
 
 def get_gspread_client():
     scope = [
@@ -35,50 +41,98 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 
-def get_users_and_topic():
+def get_spreadsheet():
     client_gspread = get_gspread_client()
+    return client_gspread.open(SPREADSHEET_NAME)
 
-    sheet = client_gspread.open("添削Botユーザー")
+
+def normalize_header(header):
+    return header.strip().lower().replace(" ", "_")
+
+
+def get_header_index(headers, target_name):
+    normalized_target = normalize_header(target_name)
+
+    for index, header in enumerate(headers, start=1):
+        if normalize_header(header) == normalized_target:
+            return index
+
+    return None
+
+
+def ensure_worksheet(sheet, worksheet_name, headers, rows=1000, cols=10):
+    try:
+        worksheet = sheet.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        worksheet = sheet.add_worksheet(title=worksheet_name, rows=rows, cols=cols)
+        worksheet.append_row(headers)
+        return worksheet
+
+    first_row = worksheet.row_values(1)
+    if not first_row:
+        worksheet.append_row(headers)
+        return worksheet
+
+    for col_index, header in enumerate(headers, start=1):
+        if len(first_row) < col_index or not first_row[col_index - 1].strip():
+            worksheet.update_cell(1, col_index, header)
+
+    return worksheet
+
+
+def get_users_and_topic():
+    sheet = get_spreadsheet()
 
     # usersシートからuserId取得
-    user_sheet = sheet.worksheet("users")
+    user_sheet = ensure_worksheet(sheet, "users", ["user_id", "paid_plan"])
     user_ids = user_sheet.col_values(1)[1:]  # ヘッダー除く
 
     # topicsシートからお題取得
-    topic_sheet = sheet.worksheet("topics")
+    topic_sheet = ensure_worksheet(sheet, "topics", ["topic"])
     topics = topic_sheet.col_values(1)[1:]  # ヘッダー除く
-    selected_topic = random.choice(topics)
+    selected_topic = random.choice(topics) if topics else "今日は英語で1文書いてみよう！"
 
     return user_ids, selected_topic
 
 
 def save_user_id(user_id):
-    client_gspread = get_gspread_client()
+    sheet = get_spreadsheet()
+    user_sheet = ensure_worksheet(sheet, "users", ["user_id", "paid_plan"])
 
-    sheet = client_gspread.open("添削Botユーザー")
-    user_sheet = sheet.worksheet("users")
+    records = user_sheet.get_all_values()
+    headers = records[0] if records else ["user_id", "paid_plan"]
+    user_id_col = get_header_index(headers, "user_id") or 1
+    paid_plan_col = get_header_index(headers, "paid_plan") or 2
 
-    existing_users = user_sheet.col_values(1)
+    for row in records[1:]:
+        if len(row) >= user_id_col and row[user_id_col - 1] == user_id:
+            return
 
-    # まだ登録されていないuserIdだけ追加
-    if user_id not in existing_users:
-        user_sheet.append_row([user_id])
+    row_length = max(user_id_col, paid_plan_col)
+    new_row = [""] * row_length
+    new_row[user_id_col - 1] = user_id
+    user_sheet.append_row(new_row)
 
 
 def check_and_update_usage(user_id):
-    client_gspread = get_gspread_client()
-
-    sheet = client_gspread.open("添削Botユーザー")
-    usage_sheet = sheet.worksheet("usage")
+    sheet = get_spreadsheet()
+    usage_sheet = ensure_worksheet(sheet, "usage", ["user_id", "date", "count"])
 
     today = datetime.now().strftime("%Y-%m-%d")
     records = usage_sheet.get_all_values()
 
     # 既存データを探す
     for i, row in enumerate(records[1:], start=2):
+        if len(row) < 3:
+            continue
+
         row_user_id = row[0]
         row_date = row[1]
-        row_count = int(row[2])
+
+        try:
+            row_count = int(row[2])
+        except ValueError:
+            row_count = 0
 
         if row_user_id == user_id and row_date == today:
             if row_count >= 10:
@@ -90,6 +144,153 @@ def check_and_update_usage(user_id):
     # 今日初めて使う場合
     usage_sheet.append_row([user_id, today, 1])
     return True
+
+
+def get_user_paid_plan(user_id):
+    sheet = get_spreadsheet()
+    user_sheet = ensure_worksheet(sheet, "users", ["user_id", "paid_plan"])
+    records = user_sheet.get_all_values()
+
+    if not records:
+        return ""
+
+    headers = records[0]
+    user_id_col = get_header_index(headers, "user_id") or 1
+    paid_plan_col = get_header_index(headers, "paid_plan")
+
+    if not paid_plan_col:
+        return ""
+
+    for row in records[1:]:
+        if len(row) >= user_id_col and row[user_id_col - 1] == user_id:
+            if len(row) >= paid_plan_col:
+                return row[paid_plan_col - 1].strip().lower()
+            return ""
+
+    return ""
+
+
+def can_use_dictionary(user_id):
+    return get_user_paid_plan(user_id) == DICTIONARY_MODE
+
+
+def get_user_mode(user_id):
+    sheet = get_spreadsheet()
+    mode_sheet = ensure_worksheet(sheet, "user_modes", ["user_id", "mode", "updated_at"])
+    records = mode_sheet.get_all_values()
+
+    if not records:
+        return DEFAULT_MODE
+
+    headers = records[0]
+    user_id_col = get_header_index(headers, "user_id") or 1
+    mode_col = get_header_index(headers, "mode") or 2
+
+    for row in records[1:]:
+        if len(row) >= user_id_col and row[user_id_col - 1] == user_id:
+            if len(row) >= mode_col and row[mode_col - 1].strip():
+                return row[mode_col - 1].strip()
+            return DEFAULT_MODE
+
+    return DEFAULT_MODE
+
+
+def set_user_mode(user_id, mode):
+    sheet = get_spreadsheet()
+    mode_sheet = ensure_worksheet(sheet, "user_modes", ["user_id", "mode", "updated_at"])
+    records = mode_sheet.get_all_values()
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if not records:
+        mode_sheet.append_row([user_id, mode, now_text])
+        return
+
+    headers = records[0]
+    user_id_col = get_header_index(headers, "user_id") or 1
+    mode_col = get_header_index(headers, "mode") or 2
+    updated_at_col = get_header_index(headers, "updated_at") or 3
+
+    for row_index, row in enumerate(records[1:], start=2):
+        if len(row) >= user_id_col and row[user_id_col - 1] == user_id:
+            mode_sheet.update_cell(row_index, mode_col, mode)
+            mode_sheet.update_cell(row_index, updated_at_col, now_text)
+            return
+
+    row_length = max(user_id_col, mode_col, updated_at_col)
+    new_row = [""] * row_length
+    new_row[user_id_col - 1] = user_id
+    new_row[mode_col - 1] = mode
+    new_row[updated_at_col - 1] = now_text
+    mode_sheet.append_row(new_row)
+
+
+def build_correction_reply(user_input):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "あなたはフレンドリーで丁寧な英語の先生です。"
+                    "以下の英文を3つのパートに分けて添削してください。\n\n"
+                    "1. 「✏️原文」というラベルを見出しにして、1行下にその英文を記載してください\n"
+                    "2. 「✅添削後の英文」というラベルを見出しにして、1行下に正しい文を記載してください\n"
+                    "3. 「💡間違いの理由やアドバイス」というラベルを見出しにして、"
+                    "1行下にやさしいアドバイスを書いてください\n\n"
+                    "各ラベルは必ず表示し、省略しないでください。"
+                )
+            },
+            {
+                "role": "user",
+                "content": user_input
+            }
+        ],
+        temperature=0.4
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+def build_dictionary_reply(user_input):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "あなたは親切な英語・日本語辞書アシスタントです。"
+                    "ユーザー入力が英語なら日本語に、日本語なら英語に翻訳してください。"
+                    "単語、熟語、文章のどれでも対応してください。"
+                    "必ず以下の4項目をこの順番・この見出しで返してください。\n\n"
+                    "🔤単語\n"
+                    "📝意味\n"
+                    "🧩品詞\n"
+                    "💬例文\n\n"
+                    "ルール:\n"
+                    "・自然でわかりやすい訳にする\n"
+                    "・単語や熟語なら、その表現自体を「🔤単語」に書く\n"
+                    "・文章なら、主要な表現または文章全体を「🔤単語」に書く\n"
+                    "・品詞は単語や熟語なら品詞を書く。文章全体なら「文」と書く\n"
+                    "・例文は簡単で自然な1文にし、日本語訳も添える\n"
+                    "・説明はやさしく簡潔にする"
+                )
+            },
+            {
+                "role": "user",
+                "content": user_input
+            }
+        ],
+        temperature=0.3
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+def safe_reply(reply_token, text):
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text=text)
+    )
 
 
 @app.route("/send-topic", methods=['POST'])
@@ -130,11 +331,50 @@ def callback():
 def handle_message(event):
     print("handle_message triggered", flush=True)
 
+    user_id = None
+
     try:
         user_id = event.source.user_id
+        user_input = event.message.text.strip()
         print(f"user_id: {user_id}", flush=True)
 
         save_user_id(user_id)
+        current_mode = get_user_mode(user_id)
+
+        if user_input == DICTIONARY_TRIGGER:
+            if not can_use_dictionary(user_id):
+                safe_reply(
+                    event.reply_token,
+                    "辞書機能は有料プラン限定です😊\npaid_plan が dictionary のユーザーのみ利用できます。"
+                )
+                return
+
+            set_user_mode(user_id, DICTIONARY_MODE)
+            safe_reply(
+                event.reply_token,
+                "辞書モードにしました📘\n次のメッセージで、調べたい単語・熟語・文章を送ってね。"
+            )
+            return
+
+        if current_mode == DICTIONARY_MODE:
+            if not can_use_dictionary(user_id):
+                set_user_mode(user_id, DEFAULT_MODE)
+                safe_reply(
+                    event.reply_token,
+                    "辞書機能は有料プラン限定です😊\npaid_plan が dictionary のユーザーのみ利用できます。"
+                )
+                return
+
+            try:
+                reply_text = build_dictionary_reply(user_input)
+            except Exception as e:
+                print(f"dictionary error: {e}", flush=True)
+                reply_text = BUSY_MESSAGE
+            finally:
+                set_user_mode(user_id, DEFAULT_MODE)
+
+            safe_reply(event.reply_token, reply_text)
+            return
 
         can_use = check_and_update_usage(user_id)
 
@@ -143,50 +383,31 @@ def handle_message(event):
                 "本日の無料添削は10回までです😊\n\n"
                 "もっと使いたい方は、有料プランをご利用ください！"
             )
-
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=reply_text)
-            )
+            safe_reply(event.reply_token, reply_text)
             return
 
-    except Exception as e:
-        print(f"user_id error: {e}", flush=True)
+        try:
+            reply_text = build_correction_reply(user_input)
+        except Exception as e:
+            print(f"correction error: {e}", flush=True)
+            reply_text = BUSY_MESSAGE
 
-    user_input = event.message.text
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "あなたはフレンドリーで丁寧な英語の先生です。"
-                        "以下の英文を3つのパートに分けて添削してください。\n\n"
-                        "1. 「✏️原文」というラベルを見出しにして、1行下にその英文を記載してください\n"
-                        "2. 「✅添削後の英文」というラベルを見出しにして、1行下に正しい文を記載してください\n"
-                        "3. 「💡間違いの理由やアドバイス」というラベルを見出しにして、"
-                        "1行下にやさしいアドバイスを書いてください\n\n"
-                        "各ラベルは必ず表示し、省略しないでください。"
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": user_input
-                }
-            ]
-        )
-
-        reply_text = response.choices[0].message.content.strip()
+        safe_reply(event.reply_token, reply_text)
 
     except Exception as e:
-        reply_text = f"エラーが発生しました：{str(e)}"
+        print(f"handle_message error: {e}", flush=True)
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply_text)
-    )
+        if user_id:
+            try:
+                if get_user_mode(user_id) == DICTIONARY_MODE:
+                    set_user_mode(user_id, DEFAULT_MODE)
+            except Exception as mode_error:
+                print(f"mode reset error: {mode_error}", flush=True)
+
+        try:
+            safe_reply(event.reply_token, BUSY_MESSAGE)
+        except Exception as reply_error:
+            print(f"reply error: {reply_error}", flush=True)
 
 
 if __name__ == "__main__":
