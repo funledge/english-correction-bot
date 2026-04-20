@@ -12,6 +12,13 @@ import random
 
 app = Flask(__name__)
 
+from datetime import datetime
+
+@app.route("/health")
+def health():
+    print(f"[{datetime.now()}] health ping received")
+    return "ok", 200
+
 # 環境変数読み込み
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
